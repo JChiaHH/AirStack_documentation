@@ -10,6 +10,7 @@ Practical operator + developer notes for running and understanding [AirStack](ht
 - [Open the Visualizer in Foxglove](#open-the-visualizer-in-foxglove)
 - [Reset Isaac Sim Without Restarting AirStack](#reset-isaac-sim-without-restarting-airstack)
 - [AirStack Architecture](#airstack-architecture)
+- [Ground Control Station, Drone & Sensors](#ground-control-station-drone--sensors)
 - [ROS 2 Topics](#ros-2-topics)
 - [Configuration Files](#configuration-files)
 - [Troubleshooting](#troubleshooting)
@@ -205,29 +206,113 @@ A **`NUM_ROBOTS`-matched Foxglove layout is auto-generated on every container st
 
 ---
 
+## Ground Control Station, Drone & Sensors
+
+### Ground Control Station (GCS)
+
+The **Ground Control Station** is the operator-side half of AirStack — the software you use to *watch* and *command* the fleet, as opposed to the autonomy that runs *on* each drone. It runs in its own `gcs` container on `ROS_DOMAIN_ID=0` and is the only place a human (or an external client) interacts with the robots.
+
+The GCS does **not** fly the drone itself; the onboard autonomy stack does that. The GCS's job is to bridge the operator and the per-robot DDS domains, and to provide visualization and high-level command tools. It runs:
+
+- **Foxglove Studio + `foxglove_bridge`** (port 8765) — the visualization front-end. This is the default visualizer in this version of AirStack (RViz is disabled). See [Open the Visualizer in Foxglove](#open-the-visualizer-in-foxglove).
+- **`foxglove_visualizer_node`** — discovers each robot's bridged topics and merges them into one georeferenced fleet view (`/gcs/robot_markers`) in a shared global ENU frame.
+- **`action_relay`** — translates the JSON commands sent from Foxglove panels into typed ROS 2 action goals on each robot's domain (takeoff, navigate, etc.), and relays feedback/results back.
+- **Waypoint & polygon editors** — interactive click-to-place tools for building routes and geofence/search areas.
+
+Because each robot lives on its own DDS domain, the GCS reaches them through the cross-domain bridge (DDS router + action relay) described in [Multi-Domain / DDS Architecture](#multi-domain--dds-architecture). A field variant, `gcs-real`, runs the same software in host-network mode for deployment on a real ground laptop.
+
+### Drone Model
+
+The default simulated vehicle is the **Pegasus Simulator Iris quadrotor** running **PX4 SITL**.
+
+| Property | Value |
+|---|---|
+| Airframe | **Iris quadrotor** (4 rotors), Pegasus Simulator asset |
+| Autopilot / firmware | **PX4 SITL** (auto-launched by Pegasus, MAVLink lockstep) |
+| Simulator | NVIDIA Isaac Sim + **Pegasus Simulator** extension |
+| Drone USD (sim model) | Pegasus `assets/Robots/Iris/iris.usd` |
+| ROS URDF (frames/TF) | `common/ros_packages/robot_descriptions/iris/urdf/iris_with_sensors.pegasus.robot.urdf` (set via `URDF_FILE` in `.env`) |
+| MAVLink port | `14540 + vehicle_id` (e.g. `14541` for robot_1) |
+| Default launch script | `example_one_px4_pegasus_launch_script.py` (single drone) |
+
+The drone's kinematic tree (from the URDF) is: `base_link` → body → 4 rotors, plus a LiDAR mount (`ouster`) and a ZED camera body (`camera_left` / `camera_right` / `imu`). To fly a different airframe you change the drone USD in the launch script **and** the `URDF_FILE` — see [Adding / Changing a Drone or Sensors](#adding--changing-a-drone-or-sensors).
+
+### Onboard Sensors
+
+Two of the drone's sensors are **simulated by Isaac Sim** (the ZED stereo camera and the Ouster LiDAR); the rest (IMU, GPS, barometer/altitude) come from **PX4's flight controller via MAVROS**, not from a separate ROS driver. Sensor mounting offsets and configs are set in the launch script.
+
+| Sensor | Model / Config | Measures | ROS 2 topic(s) | Type | Notes |
+|---|---|---|---|---|---|
+| **Stereo camera** | Stereolabs **ZED X** (Isaac asset) | Rectified RGB (left & right) + ground-truth depth | `…/sensors/front_stereo/{left,right}/image_rect`, `…/{left,right}/camera_info`, `…/right/depth_ground_truth` | `sensor_msgs/Image`, `CameraInfo` | Mounted forward, offset `[0.2, 0.0, −0.05]` m. Default resolution **480×300** (extension default). `depth_ground_truth` is **sim-only** ground truth, not a real stereo depth estimate. |
+| **LiDAR** | **Ouster OS1** (`ouster_os1`; 128-ch, 10 Hz, 512 res) | 3D point cloud | `…/sensors/ouster/point_cloud` (filtered; raw is `…/point_cloud_raw`) | `sensor_msgs/PointCloud2` | Offset `[0.0, 0.0, 0.025]` m, `min_range = 0.75` m. **Always enabled** in the single-drone script; in the *multi*-drone script it is gated by `ENABLE_LIDAR`. |
+| **IMU (flight controller)** | PX4 SITL EKF | Body acceleration, angular rate, orientation | `…/interface/mavros/imu/data` | `sensor_msgs/Imu` | From **PX4 via MAVROS** (robot domain only). This is the IMU the EKF fuses. |
+| **GPS** | PX4 SITL (simulated GPS → EKF) | Global position (lat/lon/alt) | `…/interface/mavros/global_position/global` | `sensor_msgs/NavSatFix` | From **PX4 EKF via MAVROS**. Bridged to the host/GCS domain. The GCS uses the first fix as the robot's ENU boot origin. |
+| **Barometer / altitude** | PX4 SITL | Altitude (AMSL / relative / terrain) | `…/interface/mavros/altitude` | `mavros_msgs/Altitude` | From **PX4 EKF via MAVROS** (robot domain only). |
+
+> **Note — there is also a ZED *camera* IMU frame** (`imu` link under the ZED body) in the URDF, but the default launch graph does not publish it as a ROS topic — only the flight-controller IMU above is live. The `/sim/overhead/image` topic you may see is a **world/scene overhead camera for visualization, not a sensor on the drone.**
+
+> Most onboard-sensor topics are **robot-domain-only** (not visible from your host terminal by default) — see [Viewing topics across DDS domains](#viewing-topics-across-dds-domains).
+
+---
+
 ## ROS 2 Topics
 
 Robot-scoped topics are namespaced under `/{robot_name}` (e.g. `/robot_1`); GCS topics live under `/gcs`. In a multi-robot deployment each robot runs on its own `ROS_DOMAIN_ID`, and the GCS bridges per-robot topics across domains.
 
 > **Frames:** Each robot publishes its autonomy data in its own local `map` frame (origin = the drone's boot/takeoff position). The GCS visualizer georeferences these into a single shared global ENU `map` frame using each robot's first GPS fix as a boot offset.
 
+### Viewing topics across DDS domains
+
+AirStack isolates each robot on its own `ROS_DOMAIN_ID` (**robot N → domain N**); the GCS and your host terminal are on **domain 0**. A `ros2 topic list` run on the host therefore shows **only the topics the DDS router bridges to domain 0** — most `mavros/*` topics (e.g. `local_position/odom`, `local_position/pose`, `imu/data`, `estimator_status`) are **not** bridged and won't appear, even though they exist and publish on the robot domain.
+
+To view a robot-domain-only topic (e.g. the raw onboard EKF), use any of:
+
+```bash
+# (a) The bridged canonical odometry — works from the host as-is (domain 0)
+ros2 topic echo /robot_1/odometry_conversion/odometry
+
+# (b) Run ros2 inside the robot container (it's already on the robot domain)
+docker exec airstack-robot-desktop-1 bash -lc \
+  'source /root/AirStack/robot/ros_ws/install/setup.bash; \
+   ros2 topic echo /robot_1/interface/mavros/local_position/odom'
+
+# (c) From the host, switch your terminal onto the robot's domain
+ROS_DOMAIN_ID=1 ros2 topic list | grep local_position
+ROS_DOMAIN_ID=1 ros2 topic echo /robot_1/interface/mavros/local_position/pose
+```
+
+Use **(b)** if your host has no matching ROS 2 environment sourced — the container always has the right setup. With **(c)**, reset to `ROS_DOMAIN_ID=0` afterward to get the GCS/bridged topics back. Which topics cross to domain 0 is defined by the allowlist in `robot/ros_ws/src/autonomy_bringup/onboard_all/config/dds_router.yaml`.
+
 ### 1. Pose & State Estimation (Onboard EKF)
 
-The estimation chain is: **PX4 onboard EKF2 → MAVROS → `odometry_conversion` → autonomy stack.** PX4's EKF fuses IMU/GPS/baro onboard and exposes its estimate through MAVROS. The `px4_interface` republishes the MAVROS odometry as a plain ENU `nav_msgs/Odometry` on `/{robot}/interface/odometry`, which `odometry_conversion` then restamps, rewrites into the `map`→`base_link` frame, broadcasts to TF, and upgrades from BEST_EFFORT to RELIABLE QoS. The result, **`/{robot}/odometry_conversion/odometry`**, is the **canonical AirStack odometry** that every autonomy module (planners, controllers, takeoff/landing, safety monitor) consumes via the remapped `odometry` topic.
+The estimation chain is: **PX4 onboard EKF2 → MAVROS → `odometry_conversion` → autonomy stack.** PX4's EKF2 fuses IMU/GPS/baro onboard and exposes its estimate over MAVLink; the MAVROS `local_position` plugin converts it to ENU and publishes it (already in the `map`→`base_link` frame) on `/{robot}/interface/mavros/local_position/odom`. The `odometry_conversion` node subscribes to that topic directly and re-publishes it as **`/{robot}/odometry_conversion/odometry`** — the **canonical AirStack odometry** that every autonomy module (planners, controllers, takeoff/landing, safety monitor) consumes via the remapped `odometry` topic.
 
-| Topic | Type | Purpose | Notes |
-|---|---|---|---|
-| `/{robot}/interface/mavros/local_position/odom` | `nav_msgs/Odometry` | PX4 onboard EKF pose + twist estimate as exposed by MAVROS | Raw MAVROS output; BEST_EFFORT QoS. Upstream source of AirStack odometry. |
-| `/{robot}/interface/mavros/local_position/pose` | `geometry_msgs/PoseStamped` | PX4 EKF pose only (no twist) | Pose-only view of the same EKF estimate. |
-| `/{robot}/odometry_conversion/odometry` | `nav_msgs/Odometry` | **Canonical AirStack odometry** used by the whole autonomy stack | Frame `map` → child `base_link`; RELIABLE QoS; also broadcast to TF. Modules subscribe to this (remapped to `odometry`). Source for the GCS pose arrow. |
-| `/{robot}/interface/mavros/imu/data` | `sensor_msgs/Imu` | Orientation + angular velocity + linear acceleration from the flight-controller IMU | Feeds PX4 EKF; available to perception/VIO. |
-| `/{robot}/interface/mavros/estimator_status` | `mavros_msgs/EstimatorStatus` | **PX4 EKF health/status flags** (attitude, velocity, position validity, etc.) | Use to check estimator health. |
-| `/{robot}/interface/mavros/global_position/global` | `sensor_msgs/NavSatFix` | GPS global position (lat/lon/alt) | The GCS uses the first valid fix as the robot's ENU "boot" origin; `action_relay` gates non-takeoff tasks on its altitude. |
-| `/{robot}/interface/mavros/altitude` | `mavros_msgs/Altitude` | PX4 altitude estimates (AMSL, relative, terrain) | |
-| `/{robot}/interface/mavros/state` | `mavros_msgs/State` | FCU connection/armed/mode (e.g. OFFBOARD) state | |
-| `/{robot}/interface/mavros/extended_state` | `mavros_msgs/ExtendedState` | Landed state (ON_GROUND / IN_AIR) and VTOL state | Takeoff/landing task uses `landed_state` to confirm airborne/landed. |
-| `/{robot}/interface/mavros/battery` | `sensor_msgs/BatteryState` | Battery voltage / percentage | |
-| `/{robot}/behavior/drone_safety_monitor/state_estimate_timed_out` | `std_msgs/Bool` | Watchdog: true if odometry stopped arriving within the timeout | Published at 1 Hz by `drone_safety_monitor`, which watches `odometry_conversion/odometry`. On timeout it auto-pauses the trajectory controller; the takeoff task rejects new goals while true. |
+> **Raw mavros odom vs. converted odom — what actually differs.** Both topics carry the *same* PX4 EKF estimate (identical position, orientation, velocity, and timestamp). `odometry_conversion` is a thin republisher, not a separate estimator. In this MAVROS-based deployment the only real differences are:
+> - **QoS:** the mavros topic is `BEST_EFFORT`; the converted topic is `RELIABLE` (so the autonomy stack receives every sample). This is the node's main purpose.
+> - **TF:** `odometry_conversion` also broadcasts the dynamic transforms `map→base_link` and `map→base_link_stabilized`; mavros does not publish TF.
+> - The frame IDs are already `map`/`base_link` on the mavros topic (set in `px4_config.yaml`), so the node's frame "overwrite" is effectively a no-op here.
+>
+> **Covariance is unpopulated.** The pose/twist covariance is **all zeros on both topics** — PX4's EKF2 does not fill the covariance fields of the MAVLink ODOMETRY message in this setup. Neither topic provides EKF uncertainty; to get real covariance you must enable it upstream (PX4 / MAVLink odometry).
+>
+> **Note (legacy uXRCE-DDS path):** an alternate interface (`px4_interface.launch.xml`) exists in the repo that adds a `/{robot}/interface/odometry` hop, but it is **not** what runs by default. The default stack uses MAVROS via `interface_bringup/launch/interface.launch.py`, and there is no `/{robot}/interface/odometry` topic in a default deployment.
+
+> **Visibility column:** **Host** = bridged to the GCS/host domain (`ROS_DOMAIN_ID=0`) by the DDS router, so it appears in `ros2 topic list` on your laptop. **Robot only** = lives on the robot's domain (`ROS_DOMAIN_ID=N`) and is **not** bridged — it exists and publishes, but you must be on the robot domain to see it (see [Viewing topics across DDS domains](#viewing-topics-across-dds-domains)).
+
+| Topic | Type | Purpose | Visibility | Notes |
+|---|---|---|---|---|
+| `/{robot}/interface/mavros/local_position/odom` | `nav_msgs/Odometry` | PX4 onboard EKF pose + twist estimate as exposed by MAVROS | **Robot only** | Raw MAVROS output; BEST_EFFORT QoS. Frame `map`→`base_link`. Upstream source of AirStack odometry. |
+| `/{robot}/interface/mavros/local_position/pose` | `geometry_msgs/PoseStamped` | PX4 EKF pose only (no twist) | **Robot only** | Pose-only view of the same EKF estimate. |
+| `/{robot}/odometry_conversion/odometry` | `nav_msgs/Odometry` | **Canonical AirStack odometry** used by the whole autonomy stack | **Host** | Frame `map` → child `base_link`; RELIABLE QoS; also broadcast to TF. Modules subscribe to this (remapped to `odometry`). Source for the GCS pose arrow. Numerically identical to the raw mavros odom. |
+| `/{robot}/interface/mavros/imu/data` | `sensor_msgs/Imu` | Orientation + angular velocity + linear acceleration from the flight-controller IMU | **Robot only** | Feeds PX4 EKF; available to perception/VIO. |
+| `/{robot}/interface/mavros/estimator_status` | `mavros_msgs/EstimatorStatus` | **PX4 EKF health/status flags** (attitude, velocity, position validity, etc.) | **Robot only** | Use to check estimator health. |
+| `/{robot}/interface/mavros/global_position/global` | `sensor_msgs/NavSatFix` | GPS global position (lat/lon/alt) | **Host** | The GCS uses the first valid fix as the robot's ENU "boot" origin; `action_relay` gates non-takeoff tasks on its altitude. |
+| `/{robot}/interface/mavros/altitude` | `mavros_msgs/Altitude` | PX4 altitude estimates (AMSL, relative, terrain) | **Robot only** | |
+| `/{robot}/interface/mavros/state` | `mavros_msgs/State` | FCU connection/armed/mode (e.g. OFFBOARD) state | **Robot only** | |
+| `/{robot}/interface/mavros/extended_state` | `mavros_msgs/ExtendedState` | Landed state (ON_GROUND / IN_AIR) and VTOL state | **Robot only** | Takeoff/landing task uses `landed_state` to confirm airborne/landed. |
+| `/{robot}/interface/mavros/battery` | `sensor_msgs/BatteryState` | Battery voltage / percentage | **Robot only** | |
+| `/{robot}/behavior/drone_safety_monitor/state_estimate_timed_out` | `std_msgs/Bool` | Watchdog: true if odometry stopped arriving within the timeout | **Robot only** | Published at 1 Hz by `drone_safety_monitor`, which watches `odometry_conversion/odometry`. On timeout it auto-pauses the trajectory controller; the takeoff task rejects new goals while true. |
+
+> Most `mavros/*` topics are **robot-domain-only** by default — only `odometry_conversion/odometry` and `mavros/global_position/global` from this group are bridged to the host. If you don't see a topic in `ros2 topic list` on your laptop, it almost certainly exists on the robot domain; see below.
 
 ### 2. Commanding the Drone / Waypoints & Tasks
 
