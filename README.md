@@ -263,25 +263,77 @@ Robot-scoped topics are namespaced under `/{robot_name}` (e.g. `/robot_1`); GCS 
 
 ### Viewing topics across DDS domains
 
-AirStack isolates each robot on its own `ROS_DOMAIN_ID` (**robot N → domain N**); the GCS and your host terminal are on **domain 0**. A `ros2 topic list` run on the host therefore shows **only the topics the DDS router bridges to domain 0** — most `mavros/*` topics (e.g. `local_position/odom`, `local_position/pose`, `imu/data`, `estimator_status`) are **not** bridged and won't appear, even though they exist and publish on the robot domain.
+> **If a topic you expect is missing from `ros2 topic list`, you are almost always on the wrong DDS domain — the topic exists, your terminal just can't see it.** This is the single most common point of confusion in AirStack. Read this section before assuming a topic is broken or absent.
 
-To view a robot-domain-only topic (e.g. the raw onboard EKF), use any of:
+#### What is `ROS_DOMAIN_ID`?
+
+ROS 2 nodes only discover and talk to other nodes that share the same **`ROS_DOMAIN_ID`** — an integer (0–101) that partitions the network into isolated groups. Nodes on domain 1 cannot see topics on domain 0, and vice versa, even on the same machine. It's like a channel number: everyone must be tuned to the same channel to hear each other. If `ROS_DOMAIN_ID` is unset, it defaults to **0**.
+
+AirStack uses this deliberately to keep robots isolated:
+
+| Who | `ROS_DOMAIN_ID` | Sees... |
+|---|---|---|
+| Your host terminal (default) | **0** | Only the GCS domain + topics bridged to it |
+| GCS container | **0** | GCS domain |
+| `robot_1` container | **1** | All of robot_1's topics (full `mavros/*`, sensors, etc.) |
+| `robot_2` container | **2** | All of robot_2's topics |
+| robot N container | **N** | All of robot N's topics |
+
+A **DDS router** copies a curated **allowlist** of each robot's topics onto domain 0 so the GCS (and your host) can see them. Everything *not* on that allowlist stays private to the robot's domain.
+
+#### Where each topic lives
+
+| Topic group | Domain | Visible from host by default? |
+|---|---|---|
+| `/gcs/*`, `/clock`, `/tf_static` | 0 (GCS) | ✅ Yes |
+| **Bridged** robot topics: `…/odometry_conversion/odometry`, `…/mavros/global_position/global`, `…/sensors/*`, `…/tasks/*`, `…/global_plan`, `…/vdb_mapping/*`, `…/trajectory_controller/trajectory_vis` | copied 0 ← N | ✅ Yes |
+| **Robot-only** topics: most `…/mavros/*` — `local_position/odom`, `local_position/pose`, `imu/data`, `estimator_status`, `altitude`, `state`, `extended_state`, `battery` | N (robot) | ❌ No — must be on domain N |
+
+The exact allowlist is defined in `robot/ros_ws/src/autonomy_bringup/onboard_all/config/dds_router.yaml`. So when you don't see `…/mavros/local_position/odom` on your host, it's because that topic is **only on domain 1** and isn't in the allowlist — not because it's missing.
+
+#### How to set a terminal to a different domain
+
+`ROS_DOMAIN_ID` is just an environment variable. You can set it three ways:
 
 ```bash
-# (a) The bridged canonical odometry — works from the host as-is (domain 0)
+# 1) For a SINGLE command (prefix it — does not affect your shell afterward):
+ROS_DOMAIN_ID=1 ros2 topic list
+ROS_DOMAIN_ID=1 ros2 topic echo /robot_1/interface/mavros/local_position/odom
+
+# 2) For the WHOLE terminal session (every later ros2 command uses domain 1):
+export ROS_DOMAIN_ID=1
+ros2 topic list                 # now shows robot_1's full topic set
+ros2 topic echo /robot_1/interface/mavros/local_position/pose
+# ...switch back when done:
+export ROS_DOMAIN_ID=0          # (or just open a new terminal)
+
+# 3) Check what domain your terminal is currently on:
+echo "ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0 (unset = default 0)}"
+```
+
+> **Important:** This only works if your **host has a ROS 2 environment installed and sourced** (e.g. `source /opt/ros/jazzy/setup.bash`). If `ros2` isn't found on your host, or you're unsure it matches the container's ROS version, use the container instead (option B below) — it always has the correct environment.
+
+#### The three ways to view a robot-only topic
+
+```bash
+# (A) Use the BRIDGED equivalent from the host as-is (no domain change needed).
+#     odometry_conversion/odometry carries the same EKF data as local_position/odom:
 ros2 topic echo /robot_1/odometry_conversion/odometry
 
-# (b) Run ros2 inside the robot container (it's already on the robot domain)
+# (B) Run ros2 INSIDE the robot container (already on domain 1, env guaranteed):
 docker exec airstack-robot-desktop-1 bash -lc \
   'source /root/AirStack/robot/ros_ws/install/setup.bash; \
    ros2 topic echo /robot_1/interface/mavros/local_position/odom'
 
-# (c) From the host, switch your terminal onto the robot's domain
-ROS_DOMAIN_ID=1 ros2 topic list | grep local_position
-ROS_DOMAIN_ID=1 ros2 topic echo /robot_1/interface/mavros/local_position/pose
+# (C) Switch your HOST terminal onto the robot's domain (needs host ROS 2 sourced):
+export ROS_DOMAIN_ID=1
+ros2 topic echo /robot_1/interface/mavros/local_position/odom
+export ROS_DOMAIN_ID=0     # reset afterward to get GCS/bridged topics back
 ```
 
-Use **(b)** if your host has no matching ROS 2 environment sourced — the container always has the right setup. With **(c)**, reset to `ROS_DOMAIN_ID=0` afterward to get the GCS/bridged topics back. Which topics cross to domain 0 is defined by the allowlist in `robot/ros_ws/src/autonomy_bringup/onboard_all/config/dds_router.yaml`.
+Use **(A)** when the bridged topic already gives you what you need (it usually does), **(B)** as the most reliable way to inspect any robot-only topic, and **(C)** when you want to browse the robot's full topic list from your own terminal.
+
+> **Tip — multi-robot:** to inspect `robot_2`, use `ROS_DOMAIN_ID=2` (or `docker exec airstack-robot-desktop-2 ...`). Each robot N is on domain N.
 
 ### 1. Pose & State Estimation (Onboard EKF)
 
