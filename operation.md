@@ -8,6 +8,8 @@
 
 AirStack uses **Foxglove Studio** as its default visualizer (not RViz in this version). After `airstack up`, a Foxglove window opens but starts with no layout and no live connection — load the layout and connect:
 
+> **Don't have a Foxglove account?** Foxglove Studio requires a (free) login. Create one first at <https://app.foxglove.dev/signup>, then sign in to the Foxglove window that opens.
+
 1. Click the **top-left icon** (the Foxglove menu).
 2. Click **"Layouts"**.
 3. Click **"+ Add"**.
@@ -20,13 +22,21 @@ AirStack uses **Foxglove Studio** as its default visualizer (not RViz in this ve
    - Use `ws://localhost:8765` when Foxglove runs **inside** the GCS container.
    - Use `ws://localhost:8766` when Foxglove runs on the **host**.
 
-You should now see the drone and live data in the visualizer.
+   ![Foxglove "Open connection" dialog showing the WebSocket address bar](Images/Foxglove_Connection.png)
+
+You should now see the drone and live data in the visualizer:
+
+![Foxglove with the AirStack layout loaded and live data connected](Images/Foxglove_Final.png)
 
 **To refresh Foxglove** (e.g. after restarting the sim): re-open the connection (steps 7–9), or hard-reload the window with **`Ctrl+R`** (your imported layout is preserved).
 
 ---
 
 ## Reset Isaac Sim Without Restarting AirStack
+
+A healthy, running Isaac Sim with the drone spawned in the scene should look like this:
+
+![Isaac Sim running with the AirStack drone in the scene](Images/Isaac_sim.png)
 
 If only the simulator misbehaves (e.g. PX4 died), you don't need to tear down the whole stack. From lightest to heaviest:
 
