@@ -22,7 +22,7 @@ No high-end GPU? The Microsoft AirSim (legacy) and `simple-sim` profiles are lig
 Clone the repository recursively so its submodules are pulled in as well:
 
 ```bash
-git clone --recursive -j8 git@github.com:castacks/AirStack.git
+git clone --recursive -j8 https://github.com/castacks/AirStack.git
 cd AirStack
 ```
 
@@ -58,7 +58,16 @@ The images are large, so this can take a while.
 
 ### Option B — Build from scratch
 
-Building locally requires NVIDIA NGC container access:
+Building locally requires NVIDIA NGC container access.
+
+First, activate your `docker` group membership and confirm the Docker daemon is reachable. The installer in [Step 2](#2-install--setup) adds you to the `docker` group, but that change doesn't take effect in your current shell until you re-login or run `newgrp docker`. `docker info` should then succeed without `sudo` and without permission errors:
+
+```bash
+newgrp docker
+docker info
+```
+
+Then build the images:
 
 ```bash
 airstack image-build
