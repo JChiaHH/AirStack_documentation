@@ -1,73 +1,141 @@
 # Operation
 
-> File paths in this document are relative to the **AirStack repo root** (e.g. `~/AirStack`), not this documentation repo.
+> Paths are relative to the **AirStack repo root** (e.g. `~/AirStack`), not this docs repo.
 
 [← Docs index](README.md) · [Getting Started](getting-started.md) · [Architecture](architecture.md) · [Configuration](configuration.md)
 
-## Open the Visualizer in Foxglove
-
-AirStack uses **Foxglove Studio** as its default visualizer (not RViz in this version). After `airstack up`, a Foxglove window opens but starts with no layout and no live connection — load the layout and connect:
-
-> **Don't have a Foxglove account?** Foxglove Studio requires a (free) login. Create one first at <https://app.foxglove.dev/signup>, then sign in to the Foxglove window that opens.
-
-1. Click the **top-left icon** (the Foxglove menu).
-2. Click **"Layouts"**.
-3. Click **"+ Add"**.
-4. Click **"Import Personal Layout"**.
-5. Select the layout file **`airstack_layout_num_robots_1.json`** (matches `NUM_ROBOTS=1`; for N robots, pick the `_num_robots_<N>` file). It is generated inside the GCS container at `/root/` on every startup.
-6. Open the selected file in the dialog.
-7. Click the **top-left icon** again.
-8. Click **"Open connection"**.
-9. In the **Foxglove WebSocket** row, confirm the address bar shows `ws://localhost:8765` and click **Open**.
-   - Use `ws://localhost:8765` when Foxglove runs **inside** the GCS container.
-   - Use `ws://localhost:8766` when Foxglove runs on the **host**.
-
-   ![Foxglove "Open connection" dialog showing the WebSocket address bar](Images/Foxglove_Connection.png)
-
-You should now see the drone and live data in the visualizer:
-
-![Foxglove with the AirStack layout loaded and live data connected](Images/Foxglove_Final.png)
-
-**To refresh Foxglove** (e.g. after restarting the sim): re-open the connection (steps 7–9), or hard-reload the window with **`Ctrl+R`** (your imported layout is preserved).
+**In this guide**
+1. [Open the visualizer (Foxglove)](#1-open-the-visualizer-foxglove)
+2. [Set waypoints & run Navigate (Foxglove)](#2-set-waypoints--run-navigate-foxglove)
+3. [Visualize in RViz — point cloud & TF](#3-visualize-in-rviz--point-cloud--tf)
+4. [Reset Isaac Sim without a full restart](#4-reset-isaac-sim-without-a-full-restart)
+5. [Find & inspect ROS 2 topics (DDS domains)](#5-find--inspect-ros-2-topics-dds-domains)
+6. [Topic reference](#6-topic-reference)
 
 ---
 
-## Reset Isaac Sim Without Restarting AirStack
+## 1. Open the visualizer (Foxglove)
 
-A healthy, running Isaac Sim with the drone spawned in the scene should look like this:
+AirStack uses **Foxglove Studio** as its visualizer (not RViz). After `airstack up`, a Foxglove window opens with no layout and no connection. Load the layout, then connect.
 
-![Isaac Sim running with the AirStack drone in the scene](Images/Isaac_sim.png)
+> Foxglove needs a free login. Sign up at <https://app.foxglove.dev/signup> first.
 
-If only the simulator misbehaves (e.g. PX4 died), you don't need to tear down the whole stack. From lightest to heaviest:
+**Load the layout**
+1. Top-left icon (Foxglove menu) → **Layouts** → **+ Add** → **Import Personal Layout**.
+2. Select **`airstack_layout_num_robots_1.json`** (use `_num_robots_<N>` for N robots). It's regenerated in the GCS container at `/root/` on every startup.
 
-**Option 1 — Stop → Play in the Isaac Sim GUI (lightest).**
-In Pegasus, PX4's lifecycle is tied to the simulation timeline: pressing **Stop** kills the stale PX4 and closes the MAVLink link; pressing **Play** re-initializes the link and **auto-relaunches a fresh PX4**. Try this first. (If the backend is already wedged mid-crash, this may not recover — escalate.)
+**Connect**
+3. Top-left icon → **Open connection** → **Foxglove WebSocket**.
+4. Set the address and click **Open**:
+   - `ws://localhost:8765` — Foxglove **inside** the GCS container.
+   - `ws://localhost:8766` — Foxglove on the **host**.
 
-**Option 2 — Restart just the Isaac Sim container.**
+   ![Foxglove "Open connection" dialog](Images/Foxglove_Connection.png)
 
+You should now see the drone and live data:
+
+![Foxglove with the AirStack layout loaded](Images/Foxglove_Final.png)
+
+**Refresh** after a sim restart: re-open the connection, or hard-reload with **`Ctrl+R`** (layout is preserved).
+
+---
+
+## 2. Set waypoints & run Navigate (Foxglove)
+
+Drop waypoints in the 3D view, build a path, then send it as a `navigate` task. All in Foxglove.
+
+![Foxglove Waypoint Editor: Capture toggle, X/Y/Z table, and placed waypoints in the 3D view](Images/manual_waypoints.png)
+
+**1 — Take off first.** Non-takeoff tasks are rejected below **5 m AGL**. Robot Tasks panel → `takeoff`.
+
+**2 — Drop waypoints.** In the **Waypoint Editor** panel:
+- Click **Capture: ON** (green). This is the switch that turns 3D-view clicks into waypoints — the Waypoint and Polygon editors share `/clicked_point`, so only one should have Capture on at a time.
+- In the 3D panel toolbar, pick the **Publish point** tool (topic `/clicked_point`) and click the scene. Each click adds a waypoint.
+- Or type **X / Y / Z** and press **+ Add** for exact positions. (Clicks set X/Y on the ground plane; set height with **Z** / the altitude control.)
+- Reorder (▲/▼), delete (✕), or **Clear** rows as needed.
+- Click **Capture: OFF** when done so stray clicks don't add points.
+
+**3 — Save the route (optional, two steps).**
+
+![Robot Tasks panel: manual X/Y/Z add, and the Saves section with a named save's Load / Save buttons](Images/manual_waypoint_save.png)
+
+| Step | Button | Result |
+|---|---|---|
+| Name the current list | **+ Add** (Saves section) | Saved **in memory** — lost on relaunch |
+| Persist it | **Save** (on the save's row) | Written to **disk** — survives restart |
+
+> Disk file: `AirStack/gcs/saves/gcs_waypoint_saves.json` (host) = `~/.airstack/gcs_waypoint_saves.json` (GCS container, mounted volume). Reloaded on startup. Root-owned — use `sudo` to edit from the host.
+
+**4 — Send the Navigate goal.** Robot Tasks panel → **Navigate** tab:
+- Open the **`from:`** dropdown, pick your saved route (or **`active`** for the live list).
+- Click **Grab** → the waypoints fill the **waypoints** box.
+- Send the goal. The path publishes on `/gcs/waypoints/path` → `/robot_1/tasks/navigate/goal`.
+
+> **How Navigate uses the path:** the goal is the **last** waypoint; intermediate waypoints are soft guidance for the local planner, not hard stops. Expect it to head to the end while loosely following the line — not strict waypoint-by-waypoint. Drone must stay airborne ≥ 5 m AGL.
+
+---
+
+## 3. Visualize in RViz — point cloud & TF
+
+Foxglove is the default, but you can use **RViz** to inspect a specific drone's **point cloud** and **TF tree**. The key: RViz must be on the **same `ROS_DOMAIN_ID` as the drone** (robot N → domain N), or you won't see its robot-only topics and full TF.
+
+**On the host** (needs ROS 2 Jazzy installed + a display):
+
+```bash
+source /opt/ros/jazzy/setup.bash
+export ROS_DOMAIN_ID=1     # robot_1 → 1, robot_2 → 2, robot N → N
+rviz2
+```
+
+Then in RViz:
+1. **Global Options → Fixed Frame:** `map`.
+2. **Add → TF** — shows the drone's frames (`map`, `base_link`, sensor mounts).
+3. **Add → PointCloud2**, set **Topic** to one of:
+   - `/robot_1/sensors/ouster/point_cloud` — Ouster LiDAR cloud
+   - `/robot_1/perception/stereo_image_proc/point_cloud` — stereo-derived cloud
+
+**No ROS 2 on the host?** Run RViz inside the robot container (already on domain N, env guaranteed):
+
+```bash
+docker exec -it airstack-robot-desktop-1 bash -lc \
+  'source /root/AirStack/robot/ros_ws/install/setup.bash && rviz2'
+```
+
+> Forgetting `ROS_DOMAIN_ID` is the usual reason RViz shows an empty TF tree or no cloud. Multi-robot: match the number — `ROS_DOMAIN_ID=2` for `robot_2`. See [§5](#5-find--inspect-ros-2-topics-dds-domains).
+
+---
+
+## 4. Reset Isaac Sim without a full restart
+
+A healthy sim with the drone spawned:
+
+![Isaac Sim running with the AirStack drone](Images/Isaac_sim.png)
+
+If only the simulator misbehaves (e.g. PX4 died), reset from lightest to heaviest:
+
+**Option 1 — Stop → Play in the Isaac Sim GUI (lightest).** PX4's lifecycle follows the sim timeline: **Stop** kills the stale PX4, **Play** re-inits the link and **auto-relaunches PX4**. Try this first.
+
+**Option 2 — Restart the Isaac Sim container.**
 ```bash
 docker restart isaac-sim
 ```
-
-Because `AUTOLAUNCH="true"`, this re-runs the launch script and spawns a fresh PX4. MAVROS on the robot reconnects automatically. The robot and GCS containers keep running.
+With `AUTOLAUNCH="true"`, this respawns PX4; MAVROS reconnects. Robot and GCS containers keep running.
 
 **Option 3 — Full clean restart (most reliable).**
-
 ```bash
-cd AirStack
-airstack down
-airstack up
+cd AirStack && airstack down && airstack up
 ```
 
-> **Note:** There is no first-class "restart PX4 only" command, and the Pegasus MAVLink backend has no auto-reconnect logic. Relaunching only the PX4 binary by hand will **not** restore telemetry — use one of the options above.
+> There is **no "restart PX4 only"** command, and the Pegasus MAVLink backend has no auto-reconnect — relaunching the PX4 binary by hand won't restore telemetry.
 
-After restarting, verify before commanding flight:
+> A full restart is also currently the **only** way to clear accumulated EKF pose drift — see [Known issue: EKF pose drift over long sessions](#known-issue-ekf-pose-drift-over-long-sessions).
 
+**Verify before commanding flight:**
 ```bash
-# PX4 alive (should show a running px4, NOT "<defunct>")
+# PX4 alive (running px4, not "<defunct>")
 docker exec isaac-sim bash -lc 'pgrep -af px4'
 
-# Odometry flowing (want a steady Hz, not "no new messages")
+# Odometry flowing (steady Hz)
 docker exec airstack-robot-desktop-1 bash -lc \
   'source /root/AirStack/robot/ros_ws/install/setup.bash && \
    timeout 5 ros2 topic hz /robot_1/odometry_conversion/odometry'
@@ -75,205 +143,181 @@ docker exec airstack-robot-desktop-1 bash -lc \
 
 ---
 
-## ROS 2 Topics
+## 5. Find & inspect ROS 2 topics (DDS domains)
 
-Robot-scoped topics are namespaced under `/{robot_name}` (e.g. `/robot_1`); GCS topics live under `/gcs`. In a multi-robot deployment each robot runs on its own `ROS_DOMAIN_ID`, and the GCS bridges per-robot topics across domains.
+Robot topics are namespaced `/{robot_name}` (e.g. `/robot_1`); GCS topics under `/gcs`. Each robot runs on its own `ROS_DOMAIN_ID`; the GCS bridges select per-robot topics across domains.
 
-> **Frames:** Each robot publishes its autonomy data in its own local `map` frame (origin = the drone's boot/takeoff position). The GCS visualizer georeferences these into a single shared global ENU `map` frame using each robot's first GPS fix as a boot offset.
+> **Frames:** each robot publishes autonomy data in its own local `map` frame (origin = takeoff position). The GCS georeferences these into one shared global ENU `map` frame using each robot's first GPS fix.
 
-### Viewing topics across DDS domains
+> **Missing a topic in `ros2 topic list`? You're almost always on the wrong domain — it exists, you just can't see it.** The single most common point of confusion.
 
-> **If a topic you expect is missing from `ros2 topic list`, you are almost always on the wrong DDS domain — the topic exists, your terminal just can't see it.** This is the single most common point of confusion in AirStack. Read this section before assuming a topic is broken or absent.
+**What `ROS_DOMAIN_ID` is.** ROS 2 nodes only see other nodes on the **same `ROS_DOMAIN_ID`** (integer 0–101, like a channel number). Unset = **0**. AirStack uses it to isolate robots:
 
-#### What is `ROS_DOMAIN_ID`?
-
-ROS 2 nodes only discover and talk to other nodes that share the same **`ROS_DOMAIN_ID`** — an integer (0–101) that partitions the network into isolated groups. Nodes on domain 1 cannot see topics on domain 0, and vice versa, even on the same machine. It's like a channel number: everyone must be tuned to the same channel to hear each other. If `ROS_DOMAIN_ID` is unset, it defaults to **0**.
-
-AirStack uses this deliberately to keep robots isolated:
-
-| Who | `ROS_DOMAIN_ID` | Sees... |
+| Who | Domain | Sees |
 |---|---|---|
-| Your host terminal (default) | **0** | Only the GCS domain + topics bridged to it |
+| Host terminal (default) | **0** | GCS domain + bridged topics |
 | GCS container | **0** | GCS domain |
-| `robot_1` container | **1** | All of robot_1's topics (full `mavros/*`, sensors, etc.) |
-| `robot_2` container | **2** | All of robot_2's topics |
-| robot N container | **N** | All of robot N's topics |
+| `robot_N` container | **N** | All of robot N's topics |
 
-A **DDS router** copies a curated **allowlist** of each robot's topics onto domain 0 so the GCS (and your host) can see them. Everything *not* on that allowlist stays private to the robot's domain.
+A **DDS router** copies an allowlist of each robot's topics onto domain 0; everything else stays private to domain N. Allowlist: `robot/ros_ws/src/autonomy_bringup/onboard_all/config/dds_router.yaml`.
 
-#### Where each topic lives
-
-| Topic group | Domain | Visible from host by default? |
+| Topic group | Domain | On host? |
 |---|---|---|
-| `/gcs/*`, `/clock`, `/tf_static` | 0 (GCS) | ✅ Yes |
-| **Bridged** robot topics: `…/odometry_conversion/odometry`, `…/mavros/global_position/global`, `…/sensors/*`, `…/tasks/*`, `…/global_plan`, `…/vdb_mapping/*`, `…/trajectory_controller/trajectory_vis` | copied 0 ← N | ✅ Yes |
-| **Robot-only** topics: most `…/mavros/*` — `local_position/odom`, `local_position/pose`, `imu/data`, `estimator_status`, `altitude`, `state`, `extended_state`, `battery` | N (robot) | ❌ No — must be on domain N |
+| `/gcs/*`, `/clock`, `/tf_static` | 0 | ✅ |
+| Bridged robot topics: `…/odometry_conversion/odometry`, `…/mavros/global_position/global`, `…/sensors/*`, `…/tasks/*`, `…/global_plan`, `…/vdb_mapping/*`, `…/trajectory_controller/trajectory_vis` | 0 ← N | ✅ |
+| Robot-only: most `…/mavros/*` (`local_position/*`, `imu/data`, `estimator_status`, `state`, `battery`, …) | N | ❌ |
 
-The exact allowlist is defined in `robot/ros_ws/src/autonomy_bringup/onboard_all/config/dds_router.yaml`. So when you don't see `…/mavros/local_position/odom` on your host, it's because that topic is **only on domain 1** and isn't in the allowlist — not because it's missing.
-
-#### How to set a terminal to a different domain
-
-`ROS_DOMAIN_ID` is just an environment variable. You can set it three ways:
-
+**Set your terminal's domain:**
 ```bash
-# 1) For a SINGLE command (prefix it — does not affect your shell afterward):
-ROS_DOMAIN_ID=1 ros2 topic list
-ROS_DOMAIN_ID=1 ros2 topic echo /robot_1/interface/mavros/local_position/odom
-
-# 2) For the WHOLE terminal session (every later ros2 command uses domain 1):
-export ROS_DOMAIN_ID=1
-ros2 topic list                 # now shows robot_1's full topic set
-ros2 topic echo /robot_1/interface/mavros/local_position/pose
-# ...switch back when done:
-export ROS_DOMAIN_ID=0          # (or just open a new terminal)
-
-# 3) Check what domain your terminal is currently on:
-echo "ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0 (unset = default 0)}"
+ROS_DOMAIN_ID=1 ros2 topic list          # single command on domain 1
+export ROS_DOMAIN_ID=1                    # whole session
+export ROS_DOMAIN_ID=0                    # reset (or open a new terminal)
+echo "ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}"  # check current
 ```
+> Needs ROS 2 sourced on the host (`source /opt/ros/jazzy/setup.bash`). If `ros2` isn't on the host, use the container instead.
 
-> **Important:** This only works if your **host has a ROS 2 environment installed and sourced** (e.g. `source /opt/ros/jazzy/setup.bash`). If `ros2` isn't found on your host, or you're unsure it matches the container's ROS version, use the container instead (option B below) — it always has the correct environment.
-
-#### The three ways to view a robot-only topic
-
+**Three ways to view a robot-only topic:**
 ```bash
-# (A) Use the BRIDGED equivalent from the host as-is (no domain change needed).
-#     odometry_conversion/odometry carries the same EKF data as local_position/odom:
+# (A) Use the BRIDGED equivalent from the host (no domain change):
 ros2 topic echo /robot_1/odometry_conversion/odometry
 
-# (B) Run ros2 INSIDE the robot container (already on domain 1, env guaranteed):
+# (B) Run inside the robot container (already on domain 1):
 docker exec airstack-robot-desktop-1 bash -lc \
   'source /root/AirStack/robot/ros_ws/install/setup.bash; \
    ros2 topic echo /robot_1/interface/mavros/local_position/odom'
 
-# (C) Switch your HOST terminal onto the robot's domain (needs host ROS 2 sourced):
+# (C) Switch your host terminal onto the robot's domain:
 export ROS_DOMAIN_ID=1
 ros2 topic echo /robot_1/interface/mavros/local_position/odom
-export ROS_DOMAIN_ID=0     # reset afterward to get GCS/bridged topics back
+export ROS_DOMAIN_ID=0
 ```
+Use **(A)** when the bridged topic suffices, **(B)** as the most reliable, **(C)** to browse the robot's full list. Multi-robot: `ROS_DOMAIN_ID=2` for `robot_2`.
 
-Use **(A)** when the bridged topic already gives you what you need (it usually does), **(B)** as the most reliable way to inspect any robot-only topic, and **(C)** when you want to browse the robot's full topic list from your own terminal.
+---
 
-> **Tip — multi-robot:** to inspect `robot_2`, use `ROS_DOMAIN_ID=2` (or `docker exec airstack-robot-desktop-2 ...`). Each robot N is on domain N.
+## 6. Topic reference
 
-### 1. Pose & State Estimation (Onboard EKF)
+### 6.1 Pose & state estimation (onboard EKF)
 
-The estimation chain is: **PX4 onboard EKF2 → MAVROS → `odometry_conversion` → autonomy stack.** PX4's EKF2 fuses IMU/GPS/baro onboard and exposes its estimate over MAVLink; the MAVROS `local_position` plugin converts it to ENU and publishes it (already in the `map`→`base_link` frame) on `/{robot}/interface/mavros/local_position/odom`. The `odometry_conversion` node subscribes to that topic directly and re-publishes it as **`/{robot}/odometry_conversion/odometry`** — the **canonical AirStack odometry** that every autonomy module (planners, controllers, takeoff/landing, safety monitor) consumes via the remapped `odometry` topic.
+Chain: **PX4 EKF2 → MAVROS → `odometry_conversion` → autonomy stack.** MAVROS publishes the EKF estimate (ENU, `map`→`base_link`) on `…/mavros/local_position/odom`; `odometry_conversion` republishes it as **`/{robot}/odometry_conversion/odometry`** — the canonical odometry every module consumes.
 
-> **Raw mavros odom vs. converted odom — what actually differs.** Both topics carry the *same* PX4 EKF estimate (identical position, orientation, velocity, and timestamp). `odometry_conversion` is a thin republisher, not a separate estimator. In this MAVROS-based deployment the only real differences are:
-> - **QoS:** the mavros topic is `BEST_EFFORT`; the converted topic is `RELIABLE` (so the autonomy stack receives every sample). This is the node's main purpose.
-> - **TF:** `odometry_conversion` also broadcasts the dynamic transforms `map→base_link` and `map→base_link_stabilized`; mavros does not publish TF.
-> - The frame IDs are already `map`/`base_link` on the mavros topic (set in `px4_config.yaml`), so the node's frame "overwrite" is effectively a no-op here.
+> ### Known issue: EKF pose drift over long sessions
 >
-> **Covariance is unpopulated.** The pose/twist covariance is **all zeros on both topics** — PX4's EKF2 does not fill the covariance fields of the MAVLink ODOMETRY message in this setup. Neither topic provides EKF uncertainty; to get real covariance you must enable it upstream (PX4 / MAVLink odometry).
+> **Symptom.** When the sim runs for a long time, the drone's pose estimate drifts. The drift accumulates in the local planner (`droan_gl` stores absolute poses in the `map` frame), so over a session `navigate` paths get progressively erratic, take unnecessary detours, or get stuck — independent of which waypoints you set.
 >
-> **Note (legacy uXRCE-DDS path):** an alternate interface (`px4_interface.launch.xml`) exists in the repo that adds a `/{robot}/interface/odometry` hop, but it is **not** what runs by default. The default stack uses MAVROS via `interface_bringup/launch/interface.launch.py`, and there is no `/{robot}/interface/odometry` topic in a default deployment.
+> **Why.** Nothing external corrects the PX4 EKF in the default sim setup: GPS is fused but noisy, `macvo`/vision is **not** fused, and the Isaac ground-truth pose (`/robot_1/state/pose`) is published but **unused**. So the stack runs purely on the onboard EKF, which drifts — and the planner never re-registers its stored poses.
+>
+> **Workaround (the only reliable clear).** Restart the stack:
+> ```bash
+> cd AirStack && airstack down && airstack up
+> ```
+> This resets the EKF and clears the planner's pose graph. Lighter resets do **not** help: `droan/reset_stuck` and `droan/clear_map` only clear the rewind history, not the accumulated obstacle graph (the `clear_map` graph-clear is an unimplemented `TODO`).
+>
+> **Status.** Open issue on the AirStack `main` branch (Release 0.18.0). **Awaiting further updates from CMU** on the intended fix (e.g. a ground-truth pose source in sim, fusing `macvo`, or a LiDAR SLAM). This note will be updated when they respond.
 
-> **Visibility column:** **Host** = bridged to the GCS/host domain (`ROS_DOMAIN_ID=0`) by the DDS router, so it appears in `ros2 topic list` on your laptop. **Robot only** = lives on the robot's domain (`ROS_DOMAIN_ID=N`) and is **not** bridged — it exists and publishes, but you must be on the robot domain to see it (see [Viewing topics across DDS domains](#viewing-topics-across-dds-domains)).
+> **Raw vs converted odom:** same EKF estimate, identical numbers. `odometry_conversion` only (1) upgrades QoS BEST_EFFORT→RELIABLE, and (2) broadcasts TF (`map→base_link`). Covariance is **all zeros on both** — PX4 doesn't fill it here.
 
-| Topic | Type | Purpose | Visibility | Notes |
-|---|---|---|---|---|
-| `/{robot}/interface/mavros/local_position/odom` | `nav_msgs/Odometry` | PX4 onboard EKF pose + twist estimate as exposed by MAVROS | **Robot only** | Raw MAVROS output; BEST_EFFORT QoS. Frame `map`→`base_link`. Upstream source of AirStack odometry. |
-| `/{robot}/interface/mavros/local_position/pose` | `geometry_msgs/PoseStamped` | PX4 EKF pose only (no twist) | **Robot only** | Pose-only view of the same EKF estimate. |
-| `/{robot}/odometry_conversion/odometry` | `nav_msgs/Odometry` | **Canonical AirStack odometry** used by the whole autonomy stack | **Host** | Frame `map` → child `base_link`; RELIABLE QoS; also broadcast to TF. Modules subscribe to this (remapped to `odometry`). Source for the GCS pose arrow. Numerically identical to the raw mavros odom. |
-| `/{robot}/interface/mavros/imu/data` | `sensor_msgs/Imu` | Orientation + angular velocity + linear acceleration from the flight-controller IMU | **Robot only** | Feeds PX4 EKF; available to perception/VIO. |
-| `/{robot}/interface/mavros/estimator_status` | `mavros_msgs/EstimatorStatus` | **PX4 EKF health/status flags** (attitude, velocity, position validity, etc.) | **Robot only** | Use to check estimator health. |
-| `/{robot}/interface/mavros/global_position/global` | `sensor_msgs/NavSatFix` | GPS global position (lat/lon/alt) | **Host** | The GCS uses the first valid fix as the robot's ENU "boot" origin; `action_relay` gates non-takeoff tasks on its altitude. |
-| `/{robot}/interface/mavros/altitude` | `mavros_msgs/Altitude` | PX4 altitude estimates (AMSL, relative, terrain) | **Robot only** | |
-| `/{robot}/interface/mavros/state` | `mavros_msgs/State` | FCU connection/armed/mode (e.g. OFFBOARD) state | **Robot only** | |
-| `/{robot}/interface/mavros/extended_state` | `mavros_msgs/ExtendedState` | Landed state (ON_GROUND / IN_AIR) and VTOL state | **Robot only** | Takeoff/landing task uses `landed_state` to confirm airborne/landed. |
-| `/{robot}/interface/mavros/battery` | `sensor_msgs/BatteryState` | Battery voltage / percentage | **Robot only** | |
-| `/{robot}/behavior/drone_safety_monitor/state_estimate_timed_out` | `std_msgs/Bool` | Watchdog: true if odometry stopped arriving within the timeout | **Robot only** | Published at 1 Hz by `drone_safety_monitor`, which watches `odometry_conversion/odometry`. On timeout it auto-pauses the trajectory controller; the takeoff task rejects new goals while true. |
+> **Visibility:** **Host** = bridged to domain 0 (in your laptop's `ros2 topic list`). **Robot only** = lives on domain N, not bridged (see [§5](#5-find--inspect-ros-2-topics-dds-domains)).
 
-> Most `mavros/*` topics are **robot-domain-only** by default — only `odometry_conversion/odometry` and `mavros/global_position/global` from this group are bridged to the host. If you don't see a topic in `ros2 topic list` on your laptop, it almost certainly exists on the robot domain; see below.
+| Topic | Type | Purpose | Visibility |
+|---|---|---|---|
+| `/{robot}/interface/mavros/local_position/odom` | `nav_msgs/Odometry` | PX4 EKF pose+twist (raw MAVROS, BEST_EFFORT) | Robot only |
+| `/{robot}/interface/mavros/local_position/pose` | `geometry_msgs/PoseStamped` | EKF pose only | Robot only |
+| `/{robot}/odometry_conversion/odometry` | `nav_msgs/Odometry` | **Canonical odometry** (RELIABLE, broadcast to TF) | Host |
+| `/{robot}/interface/mavros/imu/data` | `sensor_msgs/Imu` | FCU IMU (orientation, ang. vel, lin. accel) | Robot only |
+| `/{robot}/interface/mavros/estimator_status` | `mavros_msgs/EstimatorStatus` | EKF health/validity flags | Robot only |
+| `/{robot}/interface/mavros/global_position/global` | `sensor_msgs/NavSatFix` | GPS (lat/lon/alt); first fix = ENU boot origin | Host |
+| `/{robot}/interface/mavros/altitude` | `mavros_msgs/Altitude` | AMSL / relative / terrain altitude | Robot only |
+| `/{robot}/interface/mavros/state` | `mavros_msgs/State` | Connection/armed/mode (e.g. OFFBOARD) | Robot only |
+| `/{robot}/interface/mavros/extended_state` | `mavros_msgs/ExtendedState` | Landed state (ON_GROUND/IN_AIR) | Robot only |
+| `/{robot}/interface/mavros/battery` | `sensor_msgs/BatteryState` | Battery voltage/percentage | Robot only |
+| `/{robot}/behavior/drone_safety_monitor/state_estimate_timed_out` | `std_msgs/Bool` | Watchdog: odometry timed out → auto-pauses controller | Robot only |
 
-### 2. Commanding the Drone / Waypoints & Tasks
+### 6.2 Commanding the drone — waypoints & tasks
 
-High-level commands are issued as **ROS 2 actions** under `/{robot}/tasks/{task}`. Because `foxglove_bridge` drops nested fields when calling action services, the GCS does **not** call the actions directly: the Foxglove panels publish a JSON `std_msgs/String` on `…/goal` (and `…/cancel`), and the `action_relay` node parses the JSON into the typed Goal and forwards it to the on-robot action server, streaming `…/relay_feedback` and `…/relay_result` back as JSON Strings. The relay also transforms global-ENU coordinates from the editors into the robot's local `map` frame (subtracting the GPS boot offset) and rejects every non-takeoff task unless the drone is ≥ 5 m AGL.
+High-level commands are **ROS 2 actions** under `/{robot}/tasks/{task}`. Foxglove can't call nested action services, so panels publish a JSON `std_msgs/String` on `…/goal`; `action_relay` parses it into the typed Goal, forwards to the robot, and streams `…/relay_feedback` / `…/relay_result` back. The relay also converts global-ENU editor coords into the robot's local `map` frame and rejects non-takeoff tasks below 5 m AGL.
 
 Tasks: `takeoff`, `land`, `navigate`, `exploration`, `semantic_search`, `fixed_trajectory`.
 
-| Topic | Type | Purpose | Notes |
-|---|---|---|---|
-| `/{robot}/tasks/{task}/goal` | `std_msgs/String` (JSON) | Send a task goal from the GCS | Parsed by `action_relay` into the typed action goal. |
-| `/{robot}/tasks/{task}/cancel` | `std_msgs/String` | Cancel the active task | Relay forwards a cancel to the robot's action server. |
-| `/{robot}/tasks/{task}/relay_feedback` | `std_msgs/String` (JSON) | Live task feedback re-published by the relay | Mirrors the action feedback fields. |
-| `/{robot}/tasks/{task}/relay_result` | `std_msgs/String` (JSON) | Final result (`{success, message}`) | Also used to surface rejections (e.g. "takeoff first"). |
-| `/{robot}/tasks/{task}` (action) | `task_msgs/action/{Task}Task` | Underlying ROS 2 action server on the robot | e.g. `TakeoffTask`, `LandTask`, `NavigateTask`, `ExplorationTask`, `SemanticSearchTask`, `FixedTrajectoryTask`. |
-| `/{robot}/global_plan` | `nav_msgs/Path` | Global waypoint path the local planner follows | Consumed by the navigate task / local planner (remapped to `global_plan`). |
+| Topic | Type | Purpose |
+|---|---|---|
+| `/{robot}/tasks/{task}/goal` | `std_msgs/String` (JSON) | Send a task goal |
+| `/{robot}/tasks/{task}/cancel` | `std_msgs/String` | Cancel the active task |
+| `/{robot}/tasks/{task}/relay_feedback` | `std_msgs/String` (JSON) | Live feedback |
+| `/{robot}/tasks/{task}/relay_result` | `std_msgs/String` (JSON) | Final `{success, message}` (also rejections) |
+| `/{robot}/tasks/{task}` (action) | `task_msgs/action/{Task}Task` | On-robot action server |
+| `/{robot}/global_plan` | `nav_msgs/Path` | Global path the local planner follows |
 
-**Goal fields** (from the `action_relay` builders and the `task_msgs` `.action` files):
+**Goal fields:**
 
-| Task | Key goal fields |
+| Task | Key fields |
 |---|---|
-| `takeoff` | `target_altitude_m` (float, absolute target altitude; must be > 0), `velocity_m_s` (float; 0 = use config default) |
-| `land` | `velocity_m_s` (float; 0 = use config default) |
-| `navigate` | `global_plan` (`nav_msgs/Path`), `goal_tolerance_m` (float, default 1.0) |
-| `exploration` | `search_bounds` (`geometry_msgs/Polygon`, empty = unbounded), `min/max_altitude_agl`, `min/max_flight_speed`, `time_limit_sec` (0 = no limit) |
-| `semantic_search` | `query` (string), `background_queries` (string), `search_area` (`geometry_msgs/Polygon`), `min/max_altitude_agl`, `min/max_flight_speed`, `confidence_threshold` (default 0.95) |
-| `fixed_trajectory` | `trajectory_spec` (`airstack_msgs/FixedTrajectory` — type + key/value attributes), `loop` (bool) |
+| `takeoff` | `target_altitude_m` (>0), `velocity_m_s` (0 = config default) |
+| `land` | `velocity_m_s` (0 = config default) |
+| `navigate` | `global_plan` (`nav_msgs/Path`), `goal_tolerance_m` (default 1.0) |
+| `exploration` | `search_bounds` (`Polygon`, empty = unbounded), `min/max_altitude_agl`, `min/max_flight_speed`, `time_limit_sec` |
+| `semantic_search` | `query`, `background_queries`, `search_area` (`Polygon`), `min/max_altitude_agl`, `min/max_flight_speed`, `confidence_threshold` (0.95) |
+| `fixed_trajectory` | `trajectory_spec` (`airstack_msgs/FixedTrajectory`), `loop` (bool) |
 
-**Foxglove waypoint & polygon editors** — the GCS click-to-place panels (publishing on `/clicked_point`, `geometry_msgs/PointStamped`) feed two collector nodes that maintain editable lists, named saves, and rendered markers. The waypoint editor's `…/path` output is the `nav_msgs/Path` you wire into a `navigate` goal; the polygon editor's vertices feed `exploration`/`semantic_search` areas.
+**Waypoint & polygon editors** — click-to-place panels publish `/clicked_point`; collector nodes keep editable lists, saves, and markers. The waypoint editor's `…/path` is the `nav_msgs/Path` you wire into `navigate`; polygon vertices feed `exploration`/`semantic_search`. (See [§2](#2-set-waypoints--run-navigate-foxglove) for the workflow.)
 
-| Topic | Type | Purpose | Notes |
-|---|---|---|---|
-| `/clicked_point` | `geometry_msgs/PointStamped` | Click in the Foxglove 3D panel to place a waypoint/vertex | Shared by both editors; each gated by an Enable toggle. |
-| `/gcs/waypoints/command` | `std_msgs/String` (JSON) | Edit commands: add/delete/move/reorder/clear/set_altitude/saves | |
-| `/gcs/waypoints/list` | `std_msgs/String` (JSON) | Active waypoint list for the panel | Latched. |
-| `/gcs/waypoints/path` | `nav_msgs/Path` | Active waypoints as a Path, in global `map` frame | Latched. Use as the `navigate` task `global_plan`. |
-| `/gcs/waypoints/markers` | `visualization_msgs/MarkerArray` | Active-editor waypoint markers | Latched. |
-| `/gcs/waypoints/save_markers` | `visualization_msgs/MarkerArray` | All named saves rendered, each in its own color | Latched. |
-| `/gcs/waypoints/saves` | `std_msgs/String` (JSON) | Saved-route metadata (name, color, count, vertices) | Latched. |
-| `/gcs/polygon/command` | `std_msgs/String` (JSON) | Polygon edit commands (same verbs as waypoints) | |
-| `/gcs/polygon/list` | `std_msgs/String` (JSON) | Active polygon vertices | Latched. |
-| `/gcs/polygon/markers` | `visualization_msgs/MarkerArray` | Active polygon outline (closed loop, red) | Latched. |
-| `/gcs/polygon/save_markers` | `visualization_msgs/MarkerArray` | All saved polygons, each in its own color | Latched. |
-| `/gcs/polygon/saves` | `std_msgs/String` (JSON) | Saved-polygon metadata | Latched. |
+| Topic | Type | Purpose |
+|---|---|---|
+| `/clicked_point` | `geometry_msgs/PointStamped` | 3D-panel click → waypoint/vertex (shared; gated by Capture) |
+| `/gcs/waypoints/command` | `std_msgs/String` (JSON) | Edit verbs: add/delete/move/reorder/clear/set_altitude/saves |
+| `/gcs/waypoints/list` | `std_msgs/String` (JSON) | Active list (latched) |
+| `/gcs/waypoints/path` | `nav_msgs/Path` | Active path in global `map` (latched) — use as `navigate` `global_plan` |
+| `/gcs/waypoints/markers` | `visualization_msgs/MarkerArray` | Active waypoint markers (latched) |
+| `/gcs/waypoints/save_markers` | `visualization_msgs/MarkerArray` | All saved routes, per-color (latched) |
+| `/gcs/waypoints/saves` | `std_msgs/String` (JSON) | Saved-route metadata (latched) |
+| `/gcs/polygon/*` | (same shape as waypoints) | Polygon edit/list/markers/saves |
 
-### 3. GCS Visualization Topics
+### 6.3 GCS visualization
 
-The single `foxglove_visualizer_node` auto-discovers each robot's GPS/odometry/trajectory/plan/VDB topics, translates them from each robot's local `map` frame into the shared global ENU `map` frame using the GPS boot offset, and merges them into one MarkerArray for Foxglove.
+`foxglove_visualizer_node` auto-discovers each robot's topics, georeferences them into the shared global ENU `map` frame, and merges into one MarkerArray.
 
-| Topic | Type | Purpose | Notes |
-|---|---|---|---|
-| `/gcs/robot_markers` | `visualization_msgs/MarkerArray` | Combined per-robot markers (body mesh, name label, axes, local trajectory, global plan, VDB map) in global ENU | One merged array for all discovered robots. |
-| `/gcs/{robot}/location` | `sensor_msgs/NavSatFix` | Per-robot GPS rewritten to `frame_id='map'` | Foxglove's Map panel only accepts a fix in the `map` frame; this is the per-robot pin (e.g. `/gcs/robot_1/location`). |
-| `/gcs/map_origin/location` | `sensor_msgs/NavSatFix` | Stationary fix at the configured `ORIGIN_LAT/LON` | Published at 1 Hz so the Map panel has a fixed reference point. |
-| `/gcs/map_origin/ground_msl` | `std_msgs/Float64` | MSL altitude of map `z = 0` (ground datum) | Latched; set once GPS + odom are both available. |
-| `/gcs/sim_ground` | `visualization_msgs/Marker` | Sim overhead-camera image rendered as a textured ground plane (TRIANGLE_LIST) | Sim only; latched, built once from `/sim/overhead/image` + `/sim/overhead/spec`. |
+| Topic | Type | Purpose |
+|---|---|---|
+| `/gcs/robot_markers` | `visualization_msgs/MarkerArray` | Merged per-robot markers (mesh, label, axes, trajectory, plan, VDB) |
+| `/gcs/{robot}/location` | `sensor_msgs/NavSatFix` | Per-robot GPS in `map` frame (Map-panel pin) |
+| `/gcs/map_origin/location` | `sensor_msgs/NavSatFix` | Fixed reference at `ORIGIN_LAT/LON` (1 Hz) |
+| `/gcs/map_origin/ground_msl` | `std_msgs/Float64` | MSL of map `z=0` (latched) |
+| `/gcs/sim_ground` | `visualization_msgs/Marker` | Sim overhead image as textured ground (sim only, latched) |
 
-### 4. Sensors & Perception
+### 6.4 Sensors & perception
 
-Raw sensor streams live under `/{robot}/sensors/…`; processed perception products under `/{robot}/perception/…`. Image and point-cloud topics use SENSOR_QOS (BEST_EFFORT).
+Raw under `/{robot}/sensors/…`, processed under `/{robot}/perception/…`. Image/cloud topics use SENSOR_QOS (BEST_EFFORT).
 
-| Topic | Type | Purpose | Notes |
-|---|---|---|---|
-| `/{robot}/sensors/front_stereo/left/image_rect` | `sensor_msgs/Image` | Rectified left stereo image | Input to stereo disparity. |
-| `/{robot}/sensors/front_stereo/left/camera_info` | `sensor_msgs/CameraInfo` | Left camera intrinsics/calibration | |
-| `/{robot}/sensors/front_stereo/right/image_rect` | `sensor_msgs/Image` | Rectified right stereo image | |
-| `/{robot}/sensors/front_stereo/right/camera_info` | `sensor_msgs/CameraInfo` | Right camera intrinsics/calibration | |
-| `/{robot}/sensors/front_stereo/right/depth_ground_truth` | `sensor_msgs/Image` | Ground-truth depth (sim only) | Evaluation / optional depth-based world model. |
-| `/{robot}/sensors/ouster/point_cloud` | `sensor_msgs/PointCloud2` | Ouster 3D LiDAR point cloud | Feeds mapping (e.g. VDB). |
-| `/{robot}/perception/stereo_image_proc/point_cloud` | `sensor_msgs/PointCloud2` | Point cloud computed from stereo disparity | Produced by `stereo_image_proc`. |
+| Topic | Type | Purpose |
+|---|---|---|
+| `/{robot}/sensors/front_stereo/left/image_rect` | `sensor_msgs/Image` | Rectified left stereo |
+| `/{robot}/sensors/front_stereo/left/camera_info` | `sensor_msgs/CameraInfo` | Left intrinsics |
+| `/{robot}/sensors/front_stereo/right/image_rect` | `sensor_msgs/Image` | Rectified right stereo |
+| `/{robot}/sensors/front_stereo/right/camera_info` | `sensor_msgs/CameraInfo` | Right intrinsics |
+| `/{robot}/sensors/front_stereo/right/depth_ground_truth` | `sensor_msgs/Image` | Ground-truth depth (sim only) |
+| `/{robot}/sensors/ouster/point_cloud` | `sensor_msgs/PointCloud2` | Ouster LiDAR cloud (feeds VDB mapping) |
+| `/{robot}/perception/stereo_image_proc/point_cloud` | `sensor_msgs/PointCloud2` | Stereo-disparity cloud |
 
-### 5. Mapping & Plans
+### 6.5 Mapping & plans
 
-| Topic | Type | Purpose | Notes |
-|---|---|---|---|
-| `/{robot}/vdb_mapping/vdb_map_visualization` | `visualization_msgs/Marker` | VDB occupancy map mesh for visualization | Per-robot; georeferenced into `/gcs/robot_markers` by the GCS. |
-| `/{robot}/trajectory_controller/trajectory_vis` | `visualization_msgs/MarkerArray` | The trajectory currently being executed by the controller | Rendered as the live trajectory on the GCS. |
-| `/{robot}/global_plan` | `nav_msgs/Path` | Global waypoint path the robot is following | Output of global planning / input to the navigate task and local planner. |
+| Topic | Type | Purpose |
+|---|---|---|
+| `/{robot}/vdb_mapping/vdb_map_visualization` | `visualization_msgs/Marker` | VDB occupancy map mesh (height-colored) |
+| `/{robot}/trajectory_controller/trajectory_vis` | `visualization_msgs/MarkerArray` | Trajectory currently executing |
+| `/{robot}/global_plan` | `nav_msgs/Path` | Global path the robot is following |
 
-### 6. Common / Infrastructure Topics
+### 6.6 Common / infrastructure
 
-| Topic | Type | Purpose | Notes |
-|---|---|---|---|
-| `/clock` | `rosgraph_msgs/Clock` | Simulation time | Present when `use_sim_time` is active. |
-| `/tf_static` | `tf2_msgs/TFMessage` | Static transforms (e.g. `world`→`map`, sensor mounts) | Dynamic TF (`/tf`) is broadcast by `odometry_conversion`. |
-| `/rosout` | `rcl_interfaces/Log` | Aggregated node logging | |
-| `/parameter_events` | `rcl_interfaces/ParameterEvent` | Parameter change notifications | |
-| `/gossip/peers` | custom AirStack peer-profile message | Multi-robot peer discovery / gossip payload exchange | Used by the coordination/gossip layer. |
+| Topic | Type | Purpose |
+|---|---|---|
+| `/clock` | `rosgraph_msgs/Clock` | Sim time (`use_sim_time`) |
+| `/tf_static` | `tf2_msgs/TFMessage` | Static transforms; dynamic `/tf` from `odometry_conversion` |
+| `/rosout` | `rcl_interfaces/Log` | Node logging |
+| `/parameter_events` | `rcl_interfaces/ParameterEvent` | Param changes |
+| `/gossip/peers` | custom | Multi-robot peer discovery |
 
-> **Quick reference:**
-> - **Drone pose / onboard EKF:** `/{robot}/interface/mavros/local_position/odom` (raw MAVROS) and the canonical `/{robot}/odometry_conversion/odometry` (used by the stack).
+> **Quick reference**
+> - **Drone pose:** `/{robot}/odometry_conversion/odometry` (canonical); raw = `…/mavros/local_position/odom`.
 > - **EKF health:** `/{robot}/interface/mavros/estimator_status`.
-> - **Send waypoints:** build a path with the Foxglove waypoint editor (`/gcs/waypoints/path`), then send a `navigate` goal on `/{robot}/tasks/navigate/goal`.
+> - **Waypoints → fly:** build path in the Foxglove waypoint editor → **Grab** into Navigate → send (see [§2](#2-set-waypoints--run-navigate-foxglove)).
+> - **RViz cloud/TF:** `export ROS_DOMAIN_ID=N` then `rviz2` (see [§3](#3-visualize-in-rviz--point-cloud--tf)).
