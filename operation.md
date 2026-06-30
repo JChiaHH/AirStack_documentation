@@ -10,7 +10,8 @@
 3. [Visualize in RViz — point cloud & TF](#3-visualize-in-rviz--point-cloud--tf)
 4. [Reset Isaac Sim without a full restart](#4-reset-isaac-sim-without-a-full-restart)
 5. [Find & inspect ROS 2 topics (DDS domains)](#5-find--inspect-ros-2-topics-dds-domains)
-6. [Topic reference](#6-topic-reference)
+6. [Spawn multiple drones](#6-spawn-multiple-drones)
+7. [Topic reference](#7-topic-reference)
 
 ---
 
@@ -195,9 +196,74 @@ Use **(A)** when the bridged topic suffices, **(B)** as the most reliable, **(C)
 
 ---
 
-## 6. Topic reference
+## 6. Spawn multiple drones
 
-### 6.1 Pose & state estimation (onboard EKF)
+Multi-robot is done with Docker Compose **replicas** (not namespaces) — **two `.env` edits, then restart.**
+
+**1 — Edit [.env](../AirStack/.env):**
+```bash
+NUM_ROBOTS="3"                                                   # how many drones
+ISAAC_SIM_SCRIPT_NAME="example_multi_px4_pegasus_launch_script.py"   # the MULTI script
+ENABLE_LIDAR="true"                                              # see "black environment" below
+```
+> The default `ISAAC_SIM_SCRIPT_NAME` is `example_one_px4_…`, which spawns **one** drone regardless of `NUM_ROBOTS`. You **must** switch to the multi script.
+
+**2 — Restart:**
+```bash
+cd AirStack && airstack down && airstack up
+```
+
+**3 — Load the matching Foxglove layout:** import `airstack_layout_num_robots_<N>.json` (per [§1](#1-open-the-visualizer-foxglove)) so you get one tab per robot.
+
+**What happens automatically.** `NUM_ROBOTS` propagates to the robot containers (replicas `airstack-robot-desktop-1/-2/-3`), Isaac, and the GCS. The multi script loops `spawn_drone(i)` for `i = 1..N`, spacing drones **2 m apart along X**. Each container self-resolves `ROBOT_NAME=robot_N` and `ROS_DOMAIN_ID=N`; the GCS spawns one `action_relay` per robot.
+
+![Two drones spawned in Isaac Sim (Default Environment grid); stage tree shows drone2 with base_link, rotors, and ZED camera](Images/multi_drone_spawn_isaac.png)
+
+**Verify:**
+```bash
+docker ps --format '{{.Names}}' | grep robot-desktop          # robot-desktop-1/-2/-3
+for c in $(docker ps --format '{{.Names}}' | grep robot-desktop); do
+  echo "$(docker exec $c bash -c 'echo $ROBOT_NAME $ROS_DOMAIN_ID')"
+done                                                            # robot_1 1 / robot_2 2 / robot_3 3
+```
+
+Both drones fly normally — takeoff, TF, sensor feeds, waypoints all work:
+
+![Both drones hovering after takeoff in the Isaac Sim viewport](Images/multi_drone_flight_isaac.png)
+
+### Command a specific drone
+
+The **Robot Tasks** panel commands **one drone at a time**, chosen by the **`Robot:` field** at the top of the panel. To send a command to a different drone, **change that field** — e.g. from `robot_1` to `robot_2`:
+
+![Robot Tasks panel — the "Robot:" field at the top selects the target drone; change robot_1 → robot_2 to command robot 2](Images/Foxglove_Final.png)
+
+Whatever name is in the **`Robot:`** field decides where the goal goes. With `robot_2`, every task you Execute (Takeoff / Land / Navigate / Exploration / Coverage) publishes to **`/robot_2/tasks/…/goal`** instead of `/robot_1/…`. So to fly robot 2:
+
+1. Type **`robot_2`** in the **`Robot:`** field.
+2. Pick the task tab (e.g. **Takeoff**), set its fields.
+3. Click **Execute** → the goal is routed to `robot_2`.
+
+> The waypoint/polygon editors are **shared** (`/gcs/waypoints/*`), so you build a path once and target it at whichever drone you set in the `Robot:` field via the Navigate **Grab** flow ([§7.2](#72-commanding-the-drone--waypoints--tasks)). Each robot in the multi-robot layout also has its own tab, but the `Robot:` field is the actual selector.
+
+### Known gap: black Foxglove environment (multi script incomplete)
+
+In multi-drone mode the **Foxglove 3D view is black** — no textured ground, no voxel map — even though flight, TF, and sensor feeds all work. Both are **gaps in the multi-drone Isaac launch script** (`example_multi_px4_pegasus_launch_script.py`), not faults you caused — the single-drone script is more complete.
+
+![Foxglove with robot_1 and robot_2 and the test_1 waypoints — note the black 3D environment (no sim_ground, no voxel map)](Images/multi_drone_flight_foxglove.png)
+
+**1 — No VDB voxel map (LiDAR off by default).** The colored occupancy map is built from LiDAR. The multi script ships with **`ENABLE_LIDAR` defaulting to `false`** (`example_multi_px4_pegasus_launch_script.py:50`); its own docstring notes the *single*-drone script *always* enables LiDAR. With LiDAR off, no point cloud reaches the mapper → the map stays empty (black).
+- **Fix:** set `ENABLE_LIDAR="true"` in `.env` and restart. Each drone gets an Ouster and the map populates as they fly. (The AirStack pytest liveliness test sets the same flag.)
+
+**2 — No `sim_ground` (textured ground plane).** The green ground comes from an **overhead sim camera** (`add_overhead_camera_publisher` in `simulation/isaac-sim/utils/scene_prep.py`) → `/sim/overhead/image` → `/gcs/sim_ground`. The multi script **never wires that overhead camera** (only `example_multi_drone_scene_import.py` does), so `/gcs/sim_ground` is never built.
+- **No env toggle** — wiring the overhead camera into the multi script is a code change. **Incomplete on AirStack `main` (0.18.0); awaiting CMU.**
+
+> The Isaac **viewport** still shows a grid floor — that's Isaac's own Default Environment ground, **not** the GCS `sim_ground`. The black is only in Foxglove's 3D panel. Both issues are **cosmetic** — they do not affect autonomy.
+
+---
+
+## 7. Topic reference
+
+### 7.1 Pose & state estimation (onboard EKF)
 
 Chain: **PX4 EKF2 → MAVROS → `odometry_conversion` → autonomy stack.** MAVROS publishes the EKF estimate (ENU, `map`→`base_link`) on `…/mavros/local_position/odom`; `odometry_conversion` republishes it as **`/{robot}/odometry_conversion/odometry`** — the canonical odometry every module consumes.
 
@@ -233,7 +299,7 @@ Chain: **PX4 EKF2 → MAVROS → `odometry_conversion` → autonomy stack.** MAV
 | `/{robot}/interface/mavros/battery` | `sensor_msgs/BatteryState` | Battery voltage/percentage | Robot only |
 | `/{robot}/behavior/drone_safety_monitor/state_estimate_timed_out` | `std_msgs/Bool` | Watchdog: odometry timed out → auto-pauses controller | Robot only |
 
-### 6.2 Commanding the drone — waypoints & tasks
+### 7.2 Commanding the drone — waypoints & tasks
 
 High-level commands are **ROS 2 actions** under `/{robot}/tasks/{task}`. Foxglove can't call nested action services, so panels publish a JSON `std_msgs/String` on `…/goal`; `action_relay` parses it into the typed Goal, forwards to the robot, and streams `…/relay_feedback` / `…/relay_result` back. The relay also converts global-ENU editor coords into the robot's local `map` frame and rejects non-takeoff tasks below 5 m AGL.
 
@@ -272,7 +338,7 @@ Tasks: `takeoff`, `land`, `navigate`, `exploration`, `semantic_search`, `fixed_t
 | `/gcs/waypoints/saves` | `std_msgs/String` (JSON) | Saved-route metadata (latched) |
 | `/gcs/polygon/*` | (same shape as waypoints) | Polygon edit/list/markers/saves |
 
-### 6.3 GCS visualization
+### 7.3 GCS visualization
 
 `foxglove_visualizer_node` auto-discovers each robot's topics, georeferences them into the shared global ENU `map` frame, and merges into one MarkerArray.
 
@@ -284,7 +350,7 @@ Tasks: `takeoff`, `land`, `navigate`, `exploration`, `semantic_search`, `fixed_t
 | `/gcs/map_origin/ground_msl` | `std_msgs/Float64` | MSL of map `z=0` (latched) |
 | `/gcs/sim_ground` | `visualization_msgs/Marker` | Sim overhead image as textured ground (sim only, latched) |
 
-### 6.4 Sensors & perception
+### 7.4 Sensors & perception
 
 Raw under `/{robot}/sensors/…`, processed under `/{robot}/perception/…`. Image/cloud topics use SENSOR_QOS (BEST_EFFORT).
 
@@ -298,7 +364,7 @@ Raw under `/{robot}/sensors/…`, processed under `/{robot}/perception/…`. Ima
 | `/{robot}/sensors/ouster/point_cloud` | `sensor_msgs/PointCloud2` | Ouster LiDAR cloud (feeds VDB mapping) |
 | `/{robot}/perception/stereo_image_proc/point_cloud` | `sensor_msgs/PointCloud2` | Stereo-disparity cloud |
 
-### 6.5 Mapping & plans
+### 7.5 Mapping & plans
 
 | Topic | Type | Purpose |
 |---|---|---|
@@ -306,7 +372,7 @@ Raw under `/{robot}/sensors/…`, processed under `/{robot}/perception/…`. Ima
 | `/{robot}/trajectory_controller/trajectory_vis` | `visualization_msgs/MarkerArray` | Trajectory currently executing |
 | `/{robot}/global_plan` | `nav_msgs/Path` | Global path the robot is following |
 
-### 6.6 Common / infrastructure
+### 7.6 Common / infrastructure
 
 | Topic | Type | Purpose |
 |---|---|---|
